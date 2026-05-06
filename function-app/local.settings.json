@@ -3,6 +3,7 @@
   "Values": {
     "AzureWebJobsStorage": "UseDevelopmentStorage=true",
     "FUNCTIONS_WORKER_RUNTIME": "python",
-    "VALIDATE_URL": "http://localhost:8080/validate"
+    "VALIDATE_URL": "http://localhost:8080/validate",
+    "AzureWebJobsFeatureFlags": "EnableWorkerIndexing"
   }
 }
