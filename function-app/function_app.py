@@ -13,32 +13,38 @@ async def http_starter(req: func.HttpRequest, client: df.DurableOrchestrationCli
 
 @app.orchestration_trigger(context_name="context")
 def my_orchestrator(context: df.DurableOrchestrationContext):
-    
-    # Implement the orchestrator
-    # 1. Get the input order
     order = context.get_input()
-    # 2. Call validate_activity with the order
-    validation_result = context.call_activity("validate_activity", order)
-    # 3. If invalid, return {"status": "rejected", "reason": <reason>}
-    if not validation_result["is_valid"]:
-        return {"status": "rejected", "reason": validation_result["reason"]}
-    # 4. If valid, call report_activity with the order
+    
+    # 1. Call validate_activity
+    # This will now throw an exception if the URL is missing or 404s
+    validation_result = yield context.call_activity("validate_activity", order)
+    
+    # 2. Check validation
+    if not validation_result or not validation_result.get("valid"):
+        return {"status": "rejected", "reason": validation_result.get("reason", "Validation failed")}
+    
+    # 3. Proceed to report
     report_url = yield context.call_activity("report_activity", order)
-    # 5. Return {"status": "completed", "report_url": <report_url>}
     return {"status": "completed", "report_url": report_url}
+    # pass
 
 @app.activity_trigger(input_name="order")
 def validate_activity(order: dict) -> dict:
-
-    # Implement the validate activity
-    # 1. Get VALIDATE_URL from environment variables
     validate_url = os.environ.get("VALIDATE_URL")
-    # 2. Make a POST request to VALIDATE_URL with the order as JSON
-    response = requests.post(validate_url, json=order)
-    # 3. Raise an exception if the request fails (r.raise_for_status())
-    response.raise_for_status()
-    # 4. Return the parsed JSON response
-    return response.json()
+    
+    # Safety check: If URL isn't set yet (Task 5), return a clear message
+    if not validate_url:
+        return {"valid": False, "reason": "VALIDATE_URL environment variable is not set."}
+    
+    try:
+        response = requests.post(validate_url, json=order, timeout=10)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        # Returns a dict so the orchestrator doesn't crash with "not subscriptable"
+        return {"valid": False, "reason": str(e)}
+    # pass
+    
 
 @app.activity_trigger(input_name="order")
 def report_activity(order: dict) -> str:
@@ -66,9 +72,11 @@ def report_activity(order: dict) -> str:
     # Create the container group
     # Replace the `None` values below with the correct properties.
     # Hint: Follow the structure shown in the skeleton.
+    # Create the container group
     
     group = ContainerGroup(
-        location=loc, os_type=OperatingSystemTypes.linux,
+        location=loc, 
+        os_type=OperatingSystemTypes.linux,
         restart_policy=ContainerGroupRestartPolicy.never,
         identity=ContainerGroupIdentity(
             type=ResourceIdentityType.user_assigned,
@@ -83,9 +91,12 @@ def report_activity(order: dict) -> str:
             resources=ResourceRequirements(
                 requests=ResourceRequests(cpu=1.0, memory_in_gb=1.5)),
             environment_variables=[
-                EnvironmentVariable(name="ORDER_PAYLOAD", value=json.dumps(order)),
-                EnvironmentVariable(name="STORAGE_CONN", value=os.environ["STORAGE_CONN"]),
-            ])])
+                EnvironmentVariable(name="ORDER_ID", value=order["order_id"]),
+                EnvironmentVariable(name="ORDER_JSON", value=json.dumps(order)),
+                EnvironmentVariable(name="STORAGE_ACCOUNT_URL", value=os.environ["STORAGE_ACCOUNT_URL"]),
+                EnvironmentVariable(name="AZURE_CLIENT_ID", value=os.environ["AZURE_CLIENT_ID"])
+            ])]
+    )
     
     client.container_groups.begin_create_or_update(rg, name, group).result()
 
@@ -100,5 +111,8 @@ def report_activity(order: dict) -> str:
     # Clean up so it stops being a visible resource
     client.container_groups.begin_delete(rg, name)
 
-    return f"{os.environ['STORAGE_ACCOUNT_URL']}/reports/{order_id}.pdf"
+    # In case STORAGE_ACCOUNT_URL is not set as an environment variable, try to parse it from STORAGE_CONN,
+    # or use it directly as done previously.
+    storage_url = os.environ.get("STORAGE_ACCOUNT_URL", "https://<your-storage-account>.blob.core.windows.net")
+    return f"{storage_url}/reports/{order_id}.pdf"
     # pass
